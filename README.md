@@ -79,5 +79,3 @@ Stay tuned as we build, iterate, and innovate throughout the hackathon!
 ## License & Attribution  
 This project is licensed under the [MIT License](LICENSE).  
 All hackathon details and event descriptions are sourced from official ČVUT FJFI Děčín materials (2025).  
-
----
