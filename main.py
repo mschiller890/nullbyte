@@ -12,6 +12,27 @@ try:
 except Exception:
     pass
 
+# Try to import Ollama (optional)
+try:
+    import ollama
+    OLLAMA_AVAILABLE = True
+except ImportError:
+    ollama = None
+    OLLAMA_AVAILABLE = False
+    print("Ollama not available. Using alternative local AI...")
+
+# Try to import transformers for local AI fallback
+try:
+    from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
+    import torch
+    TRANSFORMERS_AVAILABLE = True
+    print("Transformers available for local AI")
+except ImportError:
+    pipeline = None
+    torch = None
+    TRANSFORMERS_AVAILABLE = False
+    print("Transformers not available. Install with: pip install transformers torch")
+
 app = FastAPI(title="nullbyte Chatbot", version="0.3.0")
 
 # Allow CORS (for frontend testing)
@@ -34,19 +55,129 @@ class ChatResponse(BaseModel):
     provider: str
     model: str
 
-# ==== Local fallback (when no key is set) ====
-def _local_demo_reply(message: str) -> str:
+# ==== Local AI via Ollama ====
+def _local_ollama_chat(message: str, system_prompt: Optional[str] = None) -> Optional[tuple[str, str]]:
+    """Use Ollama for local AI inference"""
+    if not OLLAMA_AVAILABLE or ollama is None:
+        return None
+        
+    try:
+        # Default model - you can change this to any model you have installed
+        model = os.getenv("LOCAL_MODEL", "gemma3:1b")  # Your available model
+        system = system_prompt or os.getenv(
+            "SYSTEM_PROMPT",
+            "You are a helpful and friendly assistant created by Nullbyte. You run completely locally without any API keys or internet connection required.",
+        )
+        
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": message}
+        ]
+        
+        response = ollama.chat(
+            model=model,
+            messages=messages,
+            options={
+                "temperature": 0.7,
+                "num_predict": 400,  # max tokens
+            }
+        )
+        
+        reply = response.get("message", {}).get("content", "").strip()
+        return reply, model
+        
+    except Exception as e:
+        print(f"Ollama error: {e}")
+        # Check if it's a model not found error
+        if "model" in str(e).lower() and "not found" in str(e).lower():
+            print("Tip: Install a model with 'ollama pull llama3.2:3b'")
+        return None
+
+# ==== Alternative Local AI via Transformers ====
+_cached_pipeline = None
+
+def _local_transformers_chat(message: str, system_prompt: Optional[str] = None) -> Optional[tuple[str, str]]:
+    """Use Transformers for local AI inference with error handling"""
+    global _cached_pipeline
+    
+    if not TRANSFORMERS_AVAILABLE or pipeline is None or torch is None:
+        return None
+        
+    try:
+        # Initialize pipeline once and cache it
+        if _cached_pipeline is None:
+            model_name = os.getenv("HF_MODEL", "distilgpt2")
+            print(f"Initializing model: {model_name}")
+            
+            # Try GPU first, fallback to CPU
+            device = 0 if torch.cuda.is_available() else -1
+            
+            # Create the pipeline for this request
+            _cached_pipeline = pipeline(
+                "text-generation",
+                model=model_name,
+                device=device,
+                pad_token_id=50256,
+                truncation=True
+            )
+            print("Local AI model loaded and cached!")
+        
+        text_generator = _cached_pipeline
+        
+        # Format the prompt (keep it shorter for better performance)
+        prompt = f"Human: {message}\nAI:"
+        
+        # Generate response with proper token settings
+        outputs = text_generator(
+            prompt,
+            max_new_tokens=50,  # Use max_new_tokens instead of max_length
+            num_return_sequences=1,
+            do_sample=True,
+            temperature=0.8,
+            top_p=0.9,
+            pad_token_id=50256,
+            truncation=True,
+            return_full_text=False  # Only return the generated part
+        )
+        
+        # Extract and clean the response
+        if outputs and len(outputs) > 0:
+            response = outputs[0].get("generated_text", "").strip()
+            
+            # Clean up common artifacts
+            response = response.split("Human:")[0].strip()
+            response = response.split("AI:")[0].strip()
+            response = response.split("\n")[0].strip()
+            
+            # Remove any remaining prompt artifacts
+            if response.startswith("Human:") or response.startswith("AI:"):
+                response = response.split(":", 1)[-1].strip()
+            
+            if not response or len(response) < 3:
+                response = "I understand your message. Could you ask me something else?"
+        else:
+            response = "I'm having trouble generating a response right now."
+        
+        model_name = os.getenv("HF_MODEL", "distilgpt2")
+        return response, model_name
+        
+    except Exception as e:
+        print(f"Transformers error: {e}")
+        return None
+
+# ==== Simple fallback (when no AI is available) ====
+def _simple_demo_reply(message: str) -> str:
     text = message.strip()
     if not text:
         return "Say something and I'll respond."
     lower = text.lower()
     if any(x in lower for x in ["hello", "hi", "hey"]):
-        return "Hello! I'm a local demo bot. Ask me anything."
+        return "Hello! I'm running with basic responses. For better AI, install Ollama (https://ollama.com/download) or I can use Transformers for local AI."
     if lower.endswith("?"):
-        return "Good question! I don’t have external knowledge here, but let’s reason it out together."
+        return "Good question! I'm using simple responses right now. Install Ollama for more intelligent AI, or the Transformers library is working for local AI."
     if "help" in lower:
-        return "You can ask me questions. Add your OpenRouter key to enable real AI."
-    return f"You said: {text}"
+        return "Available options: 1) Install Ollama from https://ollama.com/download 2) Use Transformers (already installed) 3) Add OpenRouter API key for cloud AI."
+    return f"You said: {text}. I'm using basic responses - install Ollama or use Transformers for smarter AI!"
 
 # ==== Real AI via OpenRouter ====
 def _openrouter_chat(message: str, system_prompt: Optional[str] = None) -> Optional[tuple[str, str]]:
@@ -93,26 +224,67 @@ def _openrouter_chat(message: str, system_prompt: Optional[str] = None) -> Optio
 # ==== Routes ====
 @app.get("/health")
 def health():
-    provider = "openrouter" if os.getenv("OPENROUTER_API_KEY") else "local"
-    model = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.1-70b-instruct") if provider == "openrouter" else "demo"
+    # Check if Ollama is available
+    try:
+        if OLLAMA_AVAILABLE and ollama is not None:
+            ollama.list()
+            provider = "ollama"
+            model = os.getenv("LOCAL_MODEL", "gemma3:1b")
+        else:
+            raise Exception("Ollama not available")
+    except Exception:
+        # Check if Transformers is available
+        if TRANSFORMERS_AVAILABLE:
+            provider = "transformers"
+            model = os.getenv("HF_MODEL", "distilgpt2")
+        # Check if OpenRouter key exists as backup
+        elif os.getenv("OPENROUTER_API_KEY"):
+            provider = "openrouter"
+            model = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.1-70b-instruct")
+        else:
+            provider = "demo"
+            model = "simple"
+    
     return {"status": "ok", "provider": provider, "model": model}
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
-    # Try OpenRouter first
+    # Try Ollama first (local AI)
+    ollama_result = _local_ollama_chat(req.message)
+    if ollama_result is not None:
+        reply, model = ollama_result
+        return ChatResponse(
+            reply=reply or _simple_demo_reply(req.message),
+            user=req.user or "guest",
+            provider="ollama",
+            model=model,
+        )
+    
+    # Try Transformers as second option (local AI)
+    transformers_result = _local_transformers_chat(req.message)
+    if transformers_result is not None:
+        reply, model = transformers_result
+        return ChatResponse(
+            reply=reply or _simple_demo_reply(req.message),
+            user=req.user or "guest",
+            provider="transformers",
+            model=model,
+        )
+    
+    # Try OpenRouter as backup
     oa = _openrouter_chat(req.message)
     if oa is not None:
         reply, model = oa
         return ChatResponse(
-            reply=reply or _local_demo_reply(req.message),
+            reply=reply or _simple_demo_reply(req.message),
             user=req.user or "guest",
             provider="openrouter",
             model=model,
         )
 
-    # Fallback to demo mode
-    reply = _local_demo_reply(req.message)
-    return ChatResponse(reply=reply, user=req.user or "guest", provider="local", model="demo")
+    # Fallback to simple demo mode
+    reply = _simple_demo_reply(req.message)
+    return ChatResponse(reply=reply, user=req.user or "guest", provider="demo", model="simple")
 
 @app.get("/", response_class=HTMLResponse)
 def ui_root():
@@ -196,13 +368,20 @@ def ui_root():
 
       addMsg('Welcome! Ask me anything.','bot');
       fetch('/health').then(r=>r.json()).then(info=>{
-        const provider=(info.provider||'local').toString();
-        const model=(info.model||'demo').toString();
+        const provider=(info.provider||'demo').toString();
+        const model=(info.model||'simple').toString();
         document.title=`nullbyte Chatbot — AI: ${provider.toUpperCase()} (${model})`;
         titleEl.textContent=`nullbyte Chatbot — AI: ${provider.toUpperCase()} (${model})`;
-        subtitleEl.textContent=provider==='local'
-          ? 'No key required. Add an API key in .env to enable real AI.'
-          : `Using ${provider.toUpperCase()} (${model})`;
+        
+        if(provider==='ollama'){
+          subtitleEl.textContent=`Running locally with Ollama (${model}) - No API keys needed!`;
+        }else if(provider==='transformers'){
+          subtitleEl.textContent=`Running locally with Transformers (${model}) - No API keys needed!`;
+        }else if(provider==='openrouter'){
+          subtitleEl.textContent=`Using ${provider.toUpperCase()} (${model}) - Install local AI for offline use`;
+        }else{
+          subtitleEl.textContent='Install local AI: "pip install transformers torch" or get Ollama';
+        }
       }).catch(()=>{subtitleEl.textContent='Status unavailable.';});
     </script>
   </body>
