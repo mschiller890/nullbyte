@@ -20,7 +20,7 @@ The hackathon challenges teams of high school students to create innovative AI o
 |------|------|--------------|
 | **Michal Schiller** | Developer | Documentation, Presentation |
 | **Jan Klacek** | Developer | Frontman, presentation, and project coordination |
-| **Matěj Sláma** | Developer | Energy drink supplier |
+| **Matěj Slama** | Developer | Documentation, Energy drink supplier |
 
 ---
 
