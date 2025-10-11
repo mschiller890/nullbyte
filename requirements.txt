@@ -12,3 +12,7 @@ openai
 ollama
 transformers
 torch
+chromadb
+langchain
+langchain-community
+aiofiles
