@@ -1,18 +1,14 @@
-requests
-feedparser
-PyMuPDF
-pandas
-sentence-transformers
-faiss-cpu
-numpy
-beautifulsoup4
-fastapi
-uvicorn
-openai
-ollama
-transformers
-torch
-chromadb
-langchain
-langchain-community
-aiofiles
+# Core web framework
+flask>=2.3.3
+flask-cors>=4.0.0
+
+# HTTP requests
+requests>=2.31.0
+
+# Document processing (optional)
+PyPDF2>=3.0.1
+
+# Development tools (optional)
+# pytest>=7.0.0
+# black>=23.0.0
+# flake8>=6.0.0
